@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Login Bitrix (com PBKDF2) - atualizado</title>
+  <style>
+    :root { --bg:#f2f6f9; --card:#fff; --accent:#2b6efd; --danger:#d9534f; --success:#28a745; --text:#222; font-family:Inter,Roboto,Arial,sans-serif; }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;background:linear-gradient(180deg,#eef3fb 0%,var(--bg) 100%);color:var(--text)}
+    .container{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+    .card{width:100%;max-width:420px;background:var(--card);border-radius:12px;padding:28px;box-shadow:0 10px 25px rgba(30,40,60,0.08);text-align:left}
+    h1{margin:0 0 16px 0;font-size:22px}
+    label{display:block;margin-top:12px;font-size:14px;color:#444}
+    input{width:100%;padding:10px 12px;margin-top:6px;border:1px solid #e2e8f0;border-radius:8px;font-size:15px;background:#fbfdff}
+    button{display:inline-block;margin-top:18px;padding:10px 14px;border:none;background:var(--accent);color:white;border-radius:10px;font-weight:600;cursor:pointer;font-size:15px}
+    .msg{margin-top:12px;font-size:14px}
+    .error{color:var(--danger)}
+    .success{color:var(--success)}
+    .loading{display:flex;align-items:center;justify-content:center;min-height:60vh;font-size:16px;color:#555}
+    .small { font-size:12px; color:#666; margin-top:6px; }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <div class="card">
+      <h1>Entrar</h1>
+      <form id="loginForm" autocomplete="off" novalidate>
+        <label for="companyId">ID da empresa</label>
+        <input id="companyId" type="text" required />
+
+        <label for="password">Senha</label>
+        <input id="password" type="password" required />
+
+        <button type="submit">Entrar</button>
+        <p id="message" class="msg" aria-live="polite"></p>
+        <p class="small">Obs: senhas não são armazenadas em texto — comparadas via PBKDF2 (browser).</p>
+      </form>
+    </div>
+  </main>
+
+  <script>
+  /**************************************************************************
+   * Validação com PBKDF2 (Web Crypto API)
+   *
+   * Armazenamos um array de objetos {id, salt (base64), hash (base64)}
+   * O hash foi gerado com: PBKDF2(password, salt, 100000 it, SHA-256, 32 bytes)
+   *
+   * Atenção: isso protege contra leitura direta da senha no HTML,
+   * mas fica tudo acessível no cliente — para produção, valide no servidor.
+   **************************************************************************/
+
+  // ======= CONFIGURACAO: entradas pré-hash (edite apenas adicionando novas entradas geradas corretamente) =======
+  // empresa123  -> salt: +xaZX1e6ofJwS63tlO/vIQ==  hash: hVhtmglRW7Pt0yyJT4syZGnenPyJMjIcrT9XXjeBMUE=
+  // clienteABC  -> salt: IXeeGFIF3fFJ1i24BDiHWQ==  hash: /a3zH+elGfFQs5Y6lmYS86Sh8h3Ai1Qy96UUydzUfPQ=
+  // 123         -> salt: TbrktQk8LF90w6vaHjMTMA==  hash: QoyGoSMxOgNhi78V3xD1MLhTQ9olTDM5jW1e2GunphA=
+
+  const STORED = [
+    { id: "empresa123", salt_b64: "+xaZX1e6ofJwS63tlO/vIQ==", hash_b64: "hVhtmglRW7Pt0yyJT4syZGnenPyJMjIcrT9XXjeBMUE=" },
+    { id: "clienteABC", salt_b64: "IXeeGFIF3fFJ1i24BDiHWQ==", hash_b64: "/a3zH+elGfFQs5Y6lmYS86Sh8h3Ai1Qy96UUydzUfPQ=" },
+    { id: "123", salt_b64: "TbrktQk8LF90w6vaHjMTMA==", hash_b64: "QoyGoSMxOgNhi78V3xD1MLhTQ9olTDM5jW1e2GunphA=" }
+  ];
+
+  // parâmetros PBKDF2 (devem bater com quem gerou as hashes)
+  const PBKDF2_ITER = 100000;
+  const PBKDF2_HASH = "SHA-256";
+  const DERIVED_LEN_BYTES = 32; // 256 bits
+
+  // helpers base64 <-> ArrayBuffer
+  function b64ToArrayBuffer(b64) {
+    const binary = atob(b64);
+    const len = binary.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+  }
+  function arrayBufferToB64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+  }
+
+  // deriva PBKDF2 -> retorna base64 do derived key
+  async function pbkdf2_hash_base64(password, salt_b64) {
+    const pwUtf8 = new TextEncoder().encode(password);
+    const salt = b64ToArrayBuffer(salt_b64);
+    const key = await crypto.subtle.importKey(
+      "raw",
+      pwUtf8,
+      { name: "PBKDF2" },
+      false,
+      ["deriveBits"]
+    );
+    const derivedBits = await crypto.subtle.deriveBits(
+      {
+        name: "PBKDF2",
+        salt: salt,
+        iterations: PBKDF2_ITER,
+        hash: PBKDF2_HASH
+      },
+      key,
+      DERIVED_LEN_BYTES * 8
+    );
+    return arrayBufferToB64(derivedBits);
+  }
+
+  // ============================================================
+  // Lógica de login: pega id, procura na STORED, deriva e compara
+  // ============================================================
+  const form = document.getElementById('loginForm');
+  const msg = document.getElementById('message');
+
+  function showMsg(text, ok=false) {
+    msg.textContent = text;
+    msg.className = 'msg ' + (ok ? 'success' : 'error');
+  }
+
+  async function validateAndLoad(id, password) {
+    // procurar entrada
+    const entry = STORED.find(e => e.id === id);
+    if (!entry) {
+      showMsg('ID incorreto.');
+      return false;
+    }
+    try {
+      // derivar
+      const derived_b64 = await pbkdf2_hash_base64(password, entry.salt_b64);
+      // comparar (tempo constante não garantido em JS puro; para front-end ok)
+      if (derived_b64 === entry.hash_b64) {
+        // sucesso
+        showMsg('Login OK — carregando formulário...', true);
+        // aguarda um pouco pra UX
+        await new Promise(r => setTimeout(r, 400));
+        // carregar bitrix
+        injectBitrixScript();
+        return true;
+      } else {
+        showMsg('Senha incorreta.');
+        return false;
+      }
+    } catch (err) {
+      console.error('Erro na validação PBKDF2:', err);
+      showMsg('Erro interno. Veja console.');
+      return false;
+    }
+  }
+
+  // injeta e executa o script Bitrix exatamente como solicitado
+  function injectBitrixScript() {
+    // limpa e mostra carregando
+    document.body.innerHTML = '<div class="loading">Carregando formulário...</div>';
+
+    // cria script com os atributos que você pediu
+    const wrapper = document.createElement('script');
+    wrapper.setAttribute('data-b24-form', 'inline/5/nsbyyp');
+    wrapper.setAttribute('data-skip-moving', 'true');
+
+    // conteúdo exato que você indicou (IIFE que carrega loader_5.js)
+    wrapper.text = "(function(w,d,u){var s=d.createElement('script');s.async=true;s.src=u+'?'+(Date.now()/180000|0);var h=d.getElementsByTagName('script')[0];h.parentNode.insertBefore(s,h);})(window,document,'https://cdn.bitrix24.com.br/b32557513/crm/form/loader_5.js');";
+
+    document.body.appendChild(wrapper);
+  }
+
+  form.addEventListener('submit', function(event) {
+    event.preventDefault();
+    const id = document.getElementById('companyId').value.trim();
+    const password = document.getElementById('password').value;
+    if (!id || !password) { showMsg('Preencha ID e senha.'); return; }
+    // valida assíncrona
+    validateAndLoad(id, password);
+  });
+
+  // =========================
+  // Gerador offline (use no console se quiser criar mais entradas)
+  // Ex: (async ()=>console.log(await generateEntry('novoId','novaSenha')))();
+  async function generateEntry(id, password) {
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const salt_b64 = arrayBufferToB64(salt.buffer);
+    const hash_b64 = await pbkdf2_hash_base64(password, salt_b64);
+    return { id, salt_b64, hash_b64 };
+  }
+  // =========================
+
+  </script>
+</body>
+</html>
